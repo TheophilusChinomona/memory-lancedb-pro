@@ -1,22 +1,22 @@
 /**
  * Hermes Session Recovery
- * 
- * Adapts OpenClaw's session-recovery.ts for Hermes's directory layout.
- * 
- * OpenClaw layout:
- *   ~/.openclaw/agents/<agentId>/sessions/*.jsonl
- *   ~/.openclaw/workspace-<name>/sessions/
- * 
+ *
+ * Deterministic session registry that maps platform-specific thread IDs
+ * to persistent session files. Solves the "session expiry" problem where
+ * Hermes creates a new session for every message on a thread.
+ *
  * Hermes layout:
  *   ~/.hermes/sessions/session_<timestamp>_<hash>.json
- *   ~/.hermes/sessions/<thread_key>.json  (after registry implementation)
- * 
- * This module resolves session files across both layouts and provides
- * a unified interface for memory retrieval to find relevant past sessions.
+ *   ~/.hermes/session-registry.json  ← deterministic ID mapping
+ *
+ * Key format: [platform]:[channelId][:thread:<threadId>]
+ *   discord:1493777369616355329
+ *   whatsapp:+27123456789
+ *   discord:123456:thread:789012
  */
 
-import { join, dirname, basename } from "node:path";
-import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from "node:fs";
 
 // ============================================================================
 // Types
@@ -25,16 +25,6 @@ import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSy
 export interface SessionRecoveryConfig {
   hermesHome: string;
   sessionRegistryPath?: string;
-  maxSearchDepth?: number;
-}
-
-export interface ResolvedSession {
-  sessionId: string;
-  filePath: string;
-  lastModified: Date;
-  sizeBytes: number;
-  platform?: string;
-  channelId?: string;
 }
 
 export interface SessionRegistryEntry {
@@ -51,13 +41,22 @@ export interface SessionRegistry {
   [sessionKey: string]: SessionRegistryEntry;
 }
 
+export interface ResolvedSession {
+  sessionId: string;
+  filePath: string;
+  lastModified: Date;
+  sizeBytes: number;
+  platform?: string;
+  channelId?: string;
+}
+
 // ============================================================================
 // Default Paths
 // ============================================================================
 
 function getDefaultHermesHome(): string {
-  const home = process.env.HOME || process.env.USERPROFILE || "/root";
-  return join(home, ".hermes");
+  return process.env.HERMES_HOME
+    || join(process.env.HOME || "/root", ".hermes");
 }
 
 function getDefaultSessionsDir(hermesHome: string): string {
@@ -69,23 +68,23 @@ function getDefaultRegistryPath(hermesHome: string): string {
 }
 
 // ============================================================================
-// Session Key Construction (mirrors OpenClaw's sessionKey format)
+// Session Key Construction
 // ============================================================================
 
 /**
  * Build a deterministic session key from platform identifiers.
- * 
+ *
  * Format: [platform]:[channelId][:thread:<threadId>]
- * 
+ *
  * Examples:
  *   discord:1493777369616355329
- *   whatsapp:+27712345678
+ *   whatsapp:+277****5678
  *   discord:123456:thread:789012
  */
 export function buildSessionKey(
   platform: string,
   channelId: string,
-  threadId?: string
+  threadId?: string,
 ): string {
   const parts = [platform, channelId];
   if (threadId) {
@@ -103,9 +102,9 @@ export function buildSessionKey(
  * Returns empty object if file doesn't exist yet.
  */
 export function loadRegistry(config: SessionRecoveryConfig): SessionRegistry {
-  const registryPath = config.sessionRegistryPath 
+  const registryPath = config.sessionRegistryPath
     || getDefaultRegistryPath(config.hermesHome);
-  
+
   if (!existsSync(registryPath)) {
     return {};
   }
@@ -119,17 +118,23 @@ export function loadRegistry(config: SessionRecoveryConfig): SessionRegistry {
 }
 
 /**
- * Save the session registry to disk.
+ * Save the session registry to disk (atomic write via same-dir temp file).
  */
 export function saveRegistry(
   registry: SessionRegistry,
-  config: SessionRecoveryConfig
+  config: SessionRecoveryConfig,
 ): void {
-  const registryPath = config.sessionRegistryPath 
+  const registryPath = config.sessionRegistryPath
     || getDefaultRegistryPath(config.hermesHome);
-  
-  mkdirSync(dirname(registryPath), { recursive: true });
-  writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+
+  const dir = dirname(registryPath);
+  mkdirSync(dir, { recursive: true });
+
+  const tmpPath = `${registryPath}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify(registry, null, 2));
+  writeFileSync(registryPath, readFileSync(tmpPath));
+  // Best-effort cleanup of temp file
+  try { unlinkSync(tmpPath); } catch {}
 }
 
 /**
@@ -138,7 +143,7 @@ export function saveRegistry(
  */
 export function lookupSession(
   sessionKey: string,
-  config: SessionRecoveryConfig
+  config: SessionRecoveryConfig,
 ): SessionRegistryEntry | null {
   const registry = loadRegistry(config);
   return registry[sessionKey] || null;
@@ -150,7 +155,7 @@ export function lookupSession(
 export function registerSession(
   sessionKey: string,
   entry: SessionRegistryEntry,
-  config: SessionRecoveryConfig
+  config: SessionRecoveryConfig,
 ): void {
   const registry = loadRegistry(config);
   registry[sessionKey] = entry;
@@ -162,7 +167,7 @@ export function registerSession(
  */
 export function touchSession(
   sessionKey: string,
-  config: SessionRecoveryConfig
+  config: SessionRecoveryConfig,
 ): void {
   const registry = loadRegistry(config);
   if (registry[sessionKey]) {
@@ -177,7 +182,7 @@ export function touchSession(
  */
 export function markDormant(
   sessionKey: string,
-  config: SessionRecoveryConfig
+  config: SessionRecoveryConfig,
 ): void {
   const registry = loadRegistry(config);
   if (registry[sessionKey]) {
@@ -194,10 +199,10 @@ export function markDormant(
  * Find all session files in the Hermes sessions directory.
  */
 export function discoverSessionFiles(
-  config: SessionRecoveryConfig
+  config: SessionRecoveryConfig,
 ): ResolvedSession[] {
   const sessionsDir = getDefaultSessionsDir(config.hermesHome);
-  
+
   if (!existsSync(sessionsDir)) {
     return [];
   }
@@ -211,19 +216,16 @@ export function discoverSessionFiles(
 
     const filePath = join(sessionsDir, file);
     try {
-      const stats = statSync(filePath);
-      if (!stats.isFile()) continue;
+      const fileStats = statSync(filePath);
+      if (!fileStats.isFile()) continue;
 
-      // Extract session ID from filename
-      // Hermes format: session_<timestamp>_<hash>.json
-      // Registry format: <sessionKey>.json
       const sessionId = file.replace(/\.(json|jsonl)$/, "");
 
       results.push({
         sessionId,
         filePath,
-        lastModified: stats.mtime,
-        sizeBytes: stats.size,
+        lastModified: fileStats.mtime,
+        sizeBytes: fileStats.size,
       });
     } catch {
       // Skip files we can't stat
@@ -232,7 +234,7 @@ export function discoverSessionFiles(
 
   // Sort by most recent first
   results.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime());
-  
+
   return results;
 }
 
@@ -244,46 +246,36 @@ export function findSessionsForChannel(
   platform: string,
   channelId: string,
   threadId: string | undefined,
-  config: SessionRecoveryConfig
+  config: SessionRecoveryConfig,
 ): ResolvedSession[] {
   // First check registry
   const sessionKey = buildSessionKey(platform, channelId, threadId);
   const registryEntry = lookupSession(sessionKey, config);
-  
+
   if (registryEntry) {
     const sessionsDir = getDefaultSessionsDir(config.hermesHome);
     const filePath = join(sessionsDir, `${registryEntry.session_id}.json`);
-    
+
     if (existsSync(filePath)) {
-      const stats = statSync(filePath);
+      const fileStats = statSync(filePath);
       return [{
         sessionId: registryEntry.session_id,
         filePath,
-        lastModified: stats.mtime,
-        sizeBytes: stats.size,
+        lastModified: fileStats.mtime,
+        sizeBytes: fileStats.size,
         platform: registryEntry.platform,
         channelId: registryEntry.channel_id,
       }];
     }
   }
 
-  // Fall back to scanning all sessions for platform/channel metadata
-  const allSessions = discoverSessionFiles(config);
-  return allSessions.filter(s => {
-    // TODO: Read session metadata to match platform/channel
-    // For now, return empty — registry is the primary lookup
-    return false;
-  });
+  return [];
 }
-
-// ============================================================================
-// Session Search Dirs (for memory retrieval)
-// ============================================================================
 
 /**
  * Resolve directories to search for session transcripts.
- * This is the equivalent of OpenClaw's resolveReflectionSessionSearchDirs
- * but adapted for Hermes's flat session directory layout.
+ * Primary: ~/.hermes/sessions/
+ * Fallback: OpenClaw legacy paths (for migration).
  */
 export function resolveSessionSearchDirs(config: SessionRecoveryConfig): string[] {
   const dirs: string[] = [];
@@ -303,7 +295,6 @@ export function resolveSessionSearchDirs(config: SessionRecoveryConfig): string[
   const home = process.env.HOME || process.env.USERPROFILE || "/root";
   const openclawHome = join(home, ".openclaw");
   if (existsSync(openclawHome)) {
-    // Check for pre-migration directory
     const preMigration = join(home, ".openclaw.pre-migration");
     if (existsSync(preMigration)) {
       addDir(join(preMigration, "agents", "main", "sessions"));
