@@ -1,0 +1,1 @@
+{"version":3,"file":"auto-capture-cleanup.d.ts","sourceRoot":"","sources":["../../src/auto-capture-cleanup.ts"],"names":[],"mappings":"AA0HA,wBAAgB,8BAA8B,CAAC,IAAI,EAAE,MAAM,EAAE,IAAI,EAAE,MAAM,GAAG,MAAM,CAkBjF;AAED,wBAAgB,wBAAwB,CACtC,IAAI,EAAE,OAAO,EACb,IAAI,EAAE,MAAM,EACZ,iBAAiB,CAAC,EAAE,CAAC,IAAI,EAAE,MAAM,EAAE,IAAI,EAAE,MAAM,KAAK,OAAO,GAC1D,MAAM,GAAG,IAAI,CAMf"}

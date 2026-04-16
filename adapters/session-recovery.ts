@@ -16,7 +16,7 @@
  */
 
 import { join, dirname, basename } from "node:path";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 
 // ============================================================================
 // Types
@@ -111,7 +111,7 @@ export function loadRegistry(config: SessionRecoveryConfig): SessionRegistry {
   }
 
   try {
-    const raw = require("node:fs").readFileSync(registryPath, "utf-8");
+    const raw = readFileSync(registryPath, "utf-8");
     return JSON.parse(raw) as SessionRegistry;
   } catch {
     return {};
@@ -128,9 +128,8 @@ export function saveRegistry(
   const registryPath = config.sessionRegistryPath 
     || getDefaultRegistryPath(config.hermesHome);
   
-  const fs = require("node:fs");
-  fs.mkdirSync(dirname(registryPath), { recursive: true });
-  fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
+  mkdirSync(dirname(registryPath), { recursive: true });
+  writeFileSync(registryPath, JSON.stringify(registry, null, 2));
 }
 
 /**
