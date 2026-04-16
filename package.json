@@ -1,9 +1,9 @@
 {
-  "name": "memory-lancedb-pro",
+  "name": "hermes-memory-lancedb",
   "version": "1.1.0-beta.10",
-  "description": "OpenClaw enhanced LanceDB memory plugin with hybrid retrieval (Vector + BM25), cross-encoder rerank, multi-scope isolation, long-context chunking, and management CLI",
+  "description": "OpenClaw enhanced LanceDB memory plugin with hybrid retrieval (Vector + BM25), cross-encoder rerank, multi-scope isolation, long-context chunking, and management CLI (Hermes adapter)",
   "type": "module",
-  "main": "index.ts",
+  "main": "dist/index.js",
   "keywords": [
     "openclaw",
     "openclaw-plugin",
@@ -35,7 +35,8 @@
     "bench:locomo": "jiti benchmark/run.ts --benchmark locomo",
     "bench:longmemeval": "jiti benchmark/run.ts --benchmark longmemeval",
     "test:openclaw-host": "node test/openclaw-host-functional.mjs",
-    "version": "node scripts/sync-plugin-version.mjs openclaw.plugin.json package.json && git add openclaw.plugin.json"
+    "version": "node scripts/sync-plugin-version.mjs openclaw.plugin.json package.json && git add openclaw.plugin.json",
+    "build": "tsc -p tsconfig.hermes.json"
   },
   "dependencies": {
     "@lancedb/lancedb": "^0.26.2",
@@ -61,5 +62,9 @@
     "commander": "^14.0.0",
     "jiti": "^2.6.0",
     "typescript": "^5.9.3"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./openclaw": "./dist/index.openclaw.js"
   }
 }
